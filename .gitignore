@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+env/
+venv/
+ENV/
+.env/
+.venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# DeepFace downloaded models (avoid uploading hundreds of MB)
+~/.deepface/
+.deepface/
+
+# OpenCV build/cache files
+opencv_cache/
+
+# Jupyter artifacts (if used)
+.ipynb_checkpoints/
+
+# Generated files
+*.tmp
