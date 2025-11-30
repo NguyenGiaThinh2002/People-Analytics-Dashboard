@@ -23,12 +23,22 @@ class CentroidTracker:
         self.count_in = 0
         self.count_out = 0
         self.crossed_ids = set()  # IDs that already crossed the line
+        
+        # Track recent crossings for statistics (cleared after being read)
+        self.recent_crossings = []  # List of {"id": person_id, "direction": "in"/"out"}
     
     def reset_counts(self):
         """Reset all counters."""
         self.count_in = 0
         self.count_out = 0
         self.crossed_ids = set()
+        self.recent_crossings = []
+    
+    def get_recent_crossings(self):
+        """Get and clear recent crossings for statistics recording."""
+        crossings = self.recent_crossings.copy()
+        self.recent_crossings = []
+        return crossings
     
     def register(self, centroid):
         """Register a new object with a unique ID."""
@@ -157,10 +167,12 @@ class CentroidTracker:
         if old_x < line_x and new_x >= line_x:
             self.count_in += 1
             self.crossed_ids.add(object_id)
+            self.recent_crossings.append({"id": object_id, "direction": "in"})
         # Crossed right to left -> OUT
         elif old_x > line_x and new_x <= line_x:
             self.count_out += 1
             self.crossed_ids.add(object_id)
+            self.recent_crossings.append({"id": object_id, "direction": "out"})
     
     def _get_objects_with_boxes(self, bbox_map):
         """Return objects with their bounding boxes."""

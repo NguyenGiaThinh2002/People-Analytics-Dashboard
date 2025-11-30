@@ -4,4 +4,5 @@ ultralytics
 mediapipe
 deepface
 tf-keras
+openpyxl
 

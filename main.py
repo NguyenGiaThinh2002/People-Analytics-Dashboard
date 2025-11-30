@@ -1,5 +1,11 @@
+import warnings
+# Suppress protobuf deprecation warnings
+warnings.filterwarnings('ignore', message='.*SymbolDatabase.GetPrototype.*')
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
 import cv2
 import time
+import os
 from ultralytics import YOLO
 from config import (
     CAMERA_SOURCE, WINDOW_NAME, CONFIDENCE_THRESHOLD,
@@ -9,6 +15,7 @@ from config import (
 from utils.tracker import CentroidTracker
 from utils.face_detector import FaceDetector
 from utils.gender_age import GenderAgeAnalyzer
+from utils.statistics import DailyStats
 
 
 def main():
@@ -17,8 +24,12 @@ def main():
     model = YOLO("yolov8n.pt")
     print("Model loaded successfully!")
     
-    # Initialize tracker
+    # Initialize tracker with callback for line crossings
     tracker = CentroidTracker(max_disappeared=MAX_DISAPPEARED, max_distance=MAX_DISTANCE)
+    
+    # Initialize statistics tracker
+    report_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reports')
+    daily_stats = DailyStats(report_dir=report_dir)
     
     # Initialize face detector and gender/age analyzer
     face_detector = None
@@ -27,7 +38,7 @@ def main():
         print("Loading face detector...")
         face_detector = FaceDetector(min_confidence=FACE_DETECTION_CONFIDENCE)
         gender_age_analyzer = GenderAgeAnalyzer()
-        print("Face detector and gender/age analyzer loaded!")
+        print("Face detector and DeepFace analyzer loaded!")
     
     # Open camera
     cap = cv2.VideoCapture(CAMERA_SOURCE)
@@ -44,12 +55,16 @@ def main():
     print(f"Camera opened: {frame_width}x{frame_height}")
     print(f"Counting line at X={line_x} (vertical)")
     print(f"Face detection: {'ENABLED' if ENABLE_FACE_DETECTION else 'DISABLED'}")
-    print("Press 'q' to quit, 'r' to reset counts, 'f' to toggle face detection, 'c' to clear cache.")
+    print("Controls:")
+    print("  'q' - Quit")
+    print("  'r' - Reset counts")
+    print("  'f' - Toggle face detection")
+    print("  'c' - Clear gender/age cache")
+    print("  's' - Save current report")
     
     # FPS calculation
     prev_time = time.time()
     face_detection_enabled = ENABLE_FACE_DETECTION
-    frame_count = 0
     
     while True:
         ret, frame = cap.read()
@@ -57,8 +72,6 @@ def main():
         if not ret:
             print("Error: Could not read frame")
             break
-        
-        frame_count += 1
         
         # Run YOLO detection (class 0 = person only)
         results = model(frame, classes=[0], conf=CONFIDENCE_THRESHOLD, verbose=False)
@@ -76,10 +89,11 @@ def main():
         # Face detection and gender/age analysis
         faces_by_person = {}
         if face_detection_enabled and face_detector and len(objects) > 0:
+            # Detect faces in ROIs
             faces_by_person = face_detector.detect_faces_in_rois(frame, objects)
             face_detector.draw_faces(frame, faces_by_person)
             
-            # Get face crops for gender/age analysis
+            # Gender/Age analysis using DeepFace
             if gender_age_analyzer:
                 # Get crops for persons without cached results
                 crops_to_analyze = {}
@@ -95,6 +109,36 @@ def main():
                 
                 # Clean up old cached IDs
                 gender_age_analyzer.clear_old_ids(objects.keys())
+        
+        # Check for new line crossings and record to statistics
+        count_in, count_out, inside = tracker.get_counts()
+        
+        # Get recent crossings with specific person IDs
+        recent_crossings = tracker.get_recent_crossings()
+        
+        for crossing in recent_crossings:
+            person_id = crossing["id"]
+            direction = crossing["direction"]
+            
+            # Get gender/age for this SPECIFIC person
+            gender = None
+            age_group = None
+            
+            if gender_age_analyzer:
+                cached = gender_age_analyzer.get_cached(person_id)
+                if cached:
+                    gender = cached.get("gender")
+                    age_group = cached.get("age_group")
+            
+            # Record to daily statistics
+            daily_stats.record_person(
+                person_id=f"{person_id}_{direction}_{time.time()}",
+                direction=direction,
+                gender=gender,
+                age_group=age_group
+            )
+            
+            print(f"[Stats] Recorded: ID {person_id} -> {direction.upper()} | {gender or 'Female'} | {age_group or 'Female'}")
         
         # Draw vertical counting line (red)
         cv2.line(frame, (line_x, 0), (line_x, frame_height), (0, 0, 255), 3)
@@ -125,9 +169,6 @@ def main():
             label_bg_x2 = x1 + label_size[0] + 10
             cv2.rectangle(frame, (x1, y1 - label_size[1] - 10), (label_bg_x2, y1), (0, 255, 0), -1)
             cv2.putText(frame, label, (x1 + 5, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-        
-        # Get counts
-        count_in, count_out, inside = tracker.get_counts()
         
         # Draw count display (big text at top)
         count_text = f"IN: {count_in}   OUT: {count_out}   INSIDE: {inside}"
@@ -166,6 +207,11 @@ def main():
             if gender_age_analyzer:
                 gender_age_analyzer.cache.clear()
                 print("Gender/age cache cleared! Will re-analyze all faces.")
+        elif key == ord('s'):
+            # Force save current report
+            filepath = daily_stats.save_report()
+            if filepath:
+                print(f"Report saved to: {filepath}")
     
     # Cleanup
     cap.release()
@@ -173,8 +219,14 @@ def main():
     if face_detector:
         face_detector.close()
     
+    # Stop statistics thread
+    daily_stats.stop()
+    
+    # Save final report
+    print("\nSaving final report...")
+    daily_stats.save_report()
+    
     # Final stats
-    count_in, count_out, inside = tracker.get_counts()
     print(f"\n{'='*50}")
     print(f"FINAL STATISTICS")
     print(f"{'='*50}")
@@ -188,6 +240,12 @@ def main():
         print(f"\nAge distribution:")
         for group, count in stats['age_groups'].items():
             print(f"  {group}: {count}")
+    
+    # Show daily stats
+    daily = daily_stats.get_current_stats()
+    print(f"\nDaily Statistics ({daily['date']}):")
+    print(f"  Total IN: {daily['total_in']}")
+    print(f"  Total OUT: {daily['total_out']}")
     
     print(f"{'='*50}")
     print("Camera closed.")
