@@ -21,3 +21,8 @@ FACE_DETECTION_CONFIDENCE = 0.4  # Minimum confidence for face detection (lowere
 # Gender/Age analysis settings
 RETRY_ANALYSIS_FRAMES = 30  # Re-analyze after this many frames if confidence was low
 
+# Performance settings
+FACE_DETECTION_INTERVAL = 3    # Run face detection every N frames (1 = every frame)
+GENDER_AGE_INTERVAL = 5        # Run gender/age analysis every N frames
+USE_THREADED_ANALYSIS = True   # Run DeepFace in background thread
+

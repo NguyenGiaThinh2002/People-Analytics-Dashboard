@@ -10,7 +10,8 @@ from ultralytics import YOLO
 from config import (
     CAMERA_SOURCE, WINDOW_NAME, CONFIDENCE_THRESHOLD,
     MAX_DISAPPEARED, MAX_DISTANCE, LINE_POSITION,
-    ENABLE_FACE_DETECTION, FACE_DETECTION_CONFIDENCE
+    ENABLE_FACE_DETECTION, FACE_DETECTION_CONFIDENCE,
+    FACE_DETECTION_INTERVAL, GENDER_AGE_INTERVAL, USE_THREADED_ANALYSIS
 )
 from utils.tracker import CentroidTracker
 from utils.face_detector import FaceDetector
@@ -37,8 +38,11 @@ def main():
     if ENABLE_FACE_DETECTION:
         print("Loading face detector...")
         face_detector = FaceDetector(min_confidence=FACE_DETECTION_CONFIDENCE)
-        gender_age_analyzer = GenderAgeAnalyzer()
+        gender_age_analyzer = GenderAgeAnalyzer(use_threading=USE_THREADED_ANALYSIS)
         print("Face detector and DeepFace analyzer loaded!")
+        print(f"  - Face detection every {FACE_DETECTION_INTERVAL} frames")
+        print(f"  - Gender/Age analysis every {GENDER_AGE_INTERVAL} frames")
+        print(f"  - Threaded analysis: {USE_THREADED_ANALYSIS}")
     
     # Open camera
     cap = cv2.VideoCapture(CAMERA_SOURCE)
@@ -65,6 +69,10 @@ def main():
     # FPS calculation
     prev_time = time.time()
     face_detection_enabled = ENABLE_FACE_DETECTION
+    frame_count = 0
+    
+    # Cache for drawing (persists between detection frames)
+    cached_faces_by_person = {}
     
     while True:
         ret, frame = cap.read()
@@ -72,6 +80,8 @@ def main():
         if not ret:
             print("Error: Could not read frame")
             break
+        
+        frame_count += 1
         
         # Run YOLO detection (class 0 = person only)
         results = model(frame, classes=[0], conf=CONFIDENCE_THRESHOLD, verbose=False)
@@ -86,24 +96,26 @@ def main():
         # Update tracker
         objects = tracker.update(bboxes, line_x)
         
-        # Face detection and gender/age analysis
-        faces_by_person = {}
+        # Face detection and gender/age analysis (with frame skipping for performance)
         if face_detection_enabled and face_detector and len(objects) > 0:
-            # Detect faces in ROIs
-            faces_by_person = face_detector.detect_faces_in_rois(frame, objects)
-            face_detector.draw_faces(frame, faces_by_person)
+            # Run face detection every N frames
+            if frame_count % FACE_DETECTION_INTERVAL == 0:
+                cached_faces_by_person = face_detector.detect_faces_in_rois(frame, objects)
             
-            # Gender/Age analysis using DeepFace
-            if gender_age_analyzer:
+            # Draw cached face boxes
+            face_detector.draw_faces(frame, cached_faces_by_person)
+            
+            # Gender/Age analysis every N frames (more expensive)
+            if gender_age_analyzer and frame_count % GENDER_AGE_INTERVAL == 0:
                 # Get crops for persons without cached results
                 crops_to_analyze = {}
-                for person_id, faces in faces_by_person.items():
+                for person_id, faces in cached_faces_by_person.items():
                     if not gender_age_analyzer.get_cached(person_id) and faces:
                         crops = face_detector.get_face_crops(frame, {person_id: faces})
                         if person_id in crops and crops[person_id]:
                             crops_to_analyze[person_id] = crops[person_id]
                 
-                # Analyze new faces
+                # Analyze new faces (non-blocking if threaded)
                 if crops_to_analyze:
                     gender_age_analyzer.analyze_faces(crops_to_analyze)
                 
@@ -218,6 +230,8 @@ def main():
     cv2.destroyAllWindows()
     if face_detector:
         face_detector.close()
+    if gender_age_analyzer:
+        gender_age_analyzer.stop()
     
     # Stop statistics thread
     daily_stats.stop()
