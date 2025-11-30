@@ -176,6 +176,10 @@ def run_pipeline(state):
         current_hour = datetime.now().hour
         
         with state.lock:
+            # Initialize pending_gender_age if not exists
+            if not hasattr(state, 'pending_gender_age'):
+                state.pending_gender_age = {}
+            
             for crossing in recent_crossings:
                 person_id = crossing["id"]
                 direction = crossing["direction"]
@@ -184,20 +188,56 @@ def run_pipeline(state):
                 if crossing_key not in state.counted_persons:
                     state.counted_persons.add(crossing_key)
                     
-                    # Update hourly counts
+                    # Update hourly counts (always)
                     state.hourly_counts[current_hour][direction] += 1
                     
-                    # Update gender/age counts
+                    # Try to get gender/age
+                    gender = None
+                    age_group = None
+                    
                     if gender_age_analyzer:
                         cached = gender_age_analyzer.get_cached(person_id)
                         if cached:
-                            gender = cached.get("gender", "Unknown")
-                            age_group = cached.get("age_group", "Unknown")
-                            
-                            if gender in state.gender_counts:
-                                state.gender_counts[gender] += 1
-                            if age_group in state.age_counts:
-                                state.age_counts[age_group] += 1
+                            gender = cached.get("gender")
+                            age_group = cached.get("age_group")
+                        
+                        # Force analysis NOW if not cached
+                        if (gender is None or age_group is None) and face_detector:
+                            if person_id in objects:
+                                person_faces = cached_faces_by_person.get(person_id, [])
+                                if person_faces:
+                                    crops = face_detector.get_face_crops(frame, {person_id: person_faces})
+                                    if person_id in crops and crops[person_id]:
+                                        gender_age_analyzer._analyze_single_face(person_id, crops[person_id][0])
+                                        cached = gender_age_analyzer.get_cached(person_id)
+                                        if cached:
+                                            gender = cached.get("gender")
+                                            age_group = cached.get("age_group")
+                    
+                    # Only update if we have valid data
+                    if gender in ["Male", "Female"]:
+                        state.gender_counts[gender] += 1
+                    else:
+                        # Add to pending
+                        state.pending_gender_age[crossing_key] = person_id
+                    
+                    if age_group in ["<12", "13-25", "26-45", "46-60", ">60"]:
+                        state.age_counts[age_group] += 1
+            
+            # Try to update pending records
+            if gender_age_analyzer and state.pending_gender_age:
+                for crossing_key, pid in list(state.pending_gender_age.items()):
+                    cached = gender_age_analyzer.get_cached(pid)
+                    if cached:
+                        gender = cached.get("gender")
+                        age_group = cached.get("age_group")
+                        
+                        if gender in ["Male", "Female"]:
+                            state.gender_counts[gender] += 1
+                            del state.pending_gender_age[crossing_key]
+                        
+                        if age_group in ["<12", "13-25", "26-45", "46-60", ">60"]:
+                            state.age_counts[age_group] += 1
         
         # Calculate FPS
         current_time = time.time()

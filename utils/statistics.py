@@ -54,8 +54,7 @@ class DailyStats:
         # Gender counts: {"Male": {"in": count, "out": count}, "Female": {...}}
         self.gender_counts = {
             "Male": {"in": 0, "out": 0},
-            "Female": {"in": 0, "out": 0},
-            "Unknown": {"in": 0, "out": 0}
+            "Female": {"in": 0, "out": 0}
         }
         
         # Age group counts: {"<12": {"in": count, "out": count}, ...}
@@ -64,9 +63,11 @@ class DailyStats:
             "13-25": {"in": 0, "out": 0},
             "26-45": {"in": 0, "out": 0},
             "46-60": {"in": 0, "out": 0},
-            ">60": {"in": 0, "out": 0},
-            "Unknown": {"in": 0, "out": 0}
+            ">60": {"in": 0, "out": 0}
         }
+        
+        # Pending updates for people who crossed before analysis completed
+        self.pending_updates = {}
         
         # Detailed hourly breakdown: {hour: {gender: {age_group: {"in": x, "out": y}}}}
         self.hourly_details = defaultdict(
@@ -138,26 +139,73 @@ class DailyStats:
         
         # Normalize inputs
         direction = direction.lower()
-        gender = gender if gender in ["Male", "Female"] else "Unknown"
-        age_group = age_group if age_group in ["<12", "13-25", "26-45", "46-60", ">60"] else "Unknown"
         
-        # Update hourly counts
+        # Update hourly counts (always)
         self.hourly_counts[hour][direction] += 1
         
-        # Update gender counts
-        self.gender_counts[gender][direction] += 1
-        
-        # Update age counts
-        self.age_counts[age_group][direction] += 1
-        
-        # Update detailed hourly breakdown
-        self.hourly_details[hour][gender][age_group][direction] += 1
-        
-        # Update totals
+        # Update totals (always)
         if direction == "in":
             self.total_in += 1
         else:
             self.total_out += 1
+        
+        # Only update gender/age if we have valid data (not None or Unknown)
+        valid_gender = gender if gender in ["Male", "Female"] else None
+        valid_age = age_group if age_group in ["<12", "13-25", "26-45", "46-60", ">60"] else None
+        
+        # Update gender counts only if valid
+        if valid_gender:
+            self.gender_counts[valid_gender][direction] += 1
+        
+        # Update age counts only if valid
+        if valid_age:
+            self.age_counts[valid_age][direction] += 1
+        
+        # Update detailed hourly breakdown only if we have both
+        if valid_gender and valid_age:
+            self.hourly_details[hour][valid_gender][valid_age][direction] += 1
+        
+        # Store pending update if missing data
+        if not valid_gender or not valid_age:
+            if not hasattr(self, 'pending_updates'):
+                self.pending_updates = {}
+            self.pending_updates[crossing_key] = {
+                'hour': hour,
+                'direction': direction,
+                'gender': valid_gender,
+                'age_group': valid_age
+            }
+    
+    def update_pending(self, person_id, direction, gender=None, age_group=None):
+        """
+        Update pending record with gender/age data that was analyzed later.
+        """
+        crossing_key = f"{person_id}_{direction}"
+        
+        if not hasattr(self, 'pending_updates'):
+            return
+        
+        if crossing_key not in self.pending_updates:
+            return
+        
+        pending = self.pending_updates[crossing_key]
+        hour = pending['hour']
+        dir_lower = pending['direction']
+        
+        # Update gender if we now have it and didn't before
+        if gender in ["Male", "Female"] and not pending['gender']:
+            self.gender_counts[gender][dir_lower] += 1
+            pending['gender'] = gender
+        
+        # Update age if we now have it and didn't before
+        if age_group in ["<12", "13-25", "26-45", "46-60", ">60"] and not pending['age_group']:
+            self.age_counts[age_group][dir_lower] += 1
+            pending['age_group'] = age_group
+        
+        # Update detailed if we now have both
+        if pending['gender'] and pending['age_group']:
+            self.hourly_details[hour][pending['gender']][pending['age_group']][dir_lower] += 1
+            del self.pending_updates[crossing_key]
     
     def get_current_stats(self):
         """Get current statistics summary."""
@@ -239,6 +287,9 @@ class DailyStats:
             
             row = 9
             for gender, counts in self.gender_counts.items():
+                # Skip Unknown category
+                if gender == "Unknown":
+                    continue
                 if counts["in"] > 0 or counts["out"] > 0:
                     ws_summary[f"A{row}"] = gender
                     ws_summary[f"B{row}"] = counts["in"]
@@ -309,7 +360,7 @@ class DailyStats:
             # === PIE CHART DATA SHEET ===
             ws_pie = wb.create_sheet("Charts Data")
             
-            # Gender pie data
+            # Gender pie data (exclude Unknown)
             ws_pie["A1"] = "Gender Distribution (IN)"
             ws_pie["A1"].font = Font(bold=True, size=12)
             ws_pie["A2"] = "Gender"
@@ -319,7 +370,7 @@ class DailyStats:
             
             row = 3
             for gender in ["Male", "Female"]:
-                count = self.gender_counts[gender]["in"]
+                count = self.gender_counts.get(gender, {}).get("in", 0)
                 if count > 0:
                     ws_pie[f"A{row}"] = gender
                     ws_pie[f"B{row}"] = count
@@ -336,7 +387,7 @@ class DailyStats:
             
             row = age_pie_start + 2
             for age_group in ["<12", "13-25", "26-45", "46-60", ">60"]:
-                count = self.age_counts[age_group]["in"]
+                count = self.age_counts.get(age_group, {}).get("in", 0)
                 if count > 0:
                     ws_pie[f"A{row}"] = age_group
                     ws_pie[f"B{row}"] = count

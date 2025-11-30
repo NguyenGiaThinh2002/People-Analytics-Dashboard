@@ -143,16 +143,53 @@ def main():
                 if cached:
                     gender = cached.get("gender")
                     age_group = cached.get("age_group")
+                
+                # If no cached result, try to force analyze NOW before they leave
+                if (gender is None or age_group is None) and face_detector:
+                    # Check if this person is still in frame
+                    if person_id in objects:
+                        # Get their face and analyze immediately
+                        person_faces = cached_faces_by_person.get(person_id, [])
+                        if person_faces:
+                            crops = face_detector.get_face_crops(frame, {person_id: person_faces})
+                            if person_id in crops and crops[person_id]:
+                                # Force synchronous analysis
+                                gender_age_analyzer._analyze_single_face(person_id, crops[person_id][0])
+                                # Check cache again
+                                cached = gender_age_analyzer.get_cached(person_id)
+                                if cached:
+                                    gender = cached.get("gender")
+                                    age_group = cached.get("age_group")
             
             # Record to daily statistics
             daily_stats.record_person(
-                person_id=f"{person_id}_{direction}_{time.time()}",
+                person_id=person_id,
                 direction=direction,
                 gender=gender,
                 age_group=age_group
             )
             
-            print(f"[Stats] Recorded: ID {person_id} -> {direction.upper()} | {gender or 'Unknown'} | {age_group or 'Unknown'}")
+            status = f"{gender or 'Pending'} | {age_group or 'Pending'}"
+            print(f"[Stats] Recorded: ID {person_id} -> {direction.upper()} | {status}")
+        
+        # Try to update any pending records with newly available gender/age data
+        if gender_age_analyzer and hasattr(daily_stats, 'pending_updates') and daily_stats.pending_updates:
+            for crossing_key in list(daily_stats.pending_updates.keys()):
+                # Extract person_id from crossing_key (format: "id_direction")
+                parts = crossing_key.rsplit('_', 1)
+                if len(parts) == 2:
+                    try:
+                        pid = int(parts[0])
+                        dir_val = parts[1]
+                        cached = gender_age_analyzer.get_cached(pid)
+                        if cached:
+                            gender = cached.get("gender")
+                            age_group = cached.get("age_group")
+                            if gender or age_group:
+                                daily_stats.update_pending(pid, dir_val, gender, age_group)
+                                print(f"[Stats] Updated pending: ID {pid} -> {gender} | {age_group}")
+                    except (ValueError, TypeError):
+                        pass
         
         # Calculate FPS
         current_time = time.time()
